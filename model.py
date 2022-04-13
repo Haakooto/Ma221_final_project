@@ -33,7 +33,7 @@ class FullyConnectedN(nn.Module):
         return x
 
 
-def train(model, optimizer, scheduler, A, x0, t, epochs=1, device=None, dtype=None):
+def train(model, optimizer, A, x0, t, epochs=1, device=None, dtype=None):
     model = model.to(device=device)
     model.train()
 
@@ -50,24 +50,36 @@ def train(model, optimizer, scheduler, A, x0, t, epochs=1, device=None, dtype=No
         out = model(t)
         dx = torch.zeros_like(out)
         for i in range(n):
-            dx[:, i] = torch.autograd.grad(outputs=out[0][i], inputs=t, grad_outputs=torch.ones_like(out[0][i]), retain_graph=True)[0]
+            dx[:, i] = torch.autograd.grad(
+                outputs=out[0][i], inputs=t, grad_outputs=torch.ones_like(out[0][i]), retain_graph=True)[0]
         x = out.reshape(-1, 1)
-        xxAx = xx0 * A @ x
-        xAxx = (x.T @ A @ x) * x
+        Ax = A @ x
+        xxAx = (x.T @ x) * Ax
+        # xxAx = xx0 * Ax
+        xAxx = (x.T @ Ax) * x
 
-        loss = F.mse_loss(dx.T, xxAx + xAxx)
+        lmb = (x.T @ A @ x) / (x.T @ x)
+        lmb = lmb[0][0]
 
-        loss.backward()
+        # d = dx.T - xxAx + xAxx
+        # d = d / torch.norm(d)
+
+        diff = torch.mean((dx.T - xxAx + xAxx)**2)
+
+        # loss = F.mse_loss(dx.T, xxAx - xAxx)
+        # loss = F.mse_loss(d, torch.zeros_like(d))
+
+        diff.backward()
         optimizer.step()
-        scheduler.step()
+        # scheduler.step()
 
-        pbar.set_description(f"Loss: {loss:.7f}")
+        pbar.set_description(f"Loss: {diff:.7f}, lmb: {lmb.data:.4f}")
     return x.detach().numpy()
 
 
 def compare_eig(S, eigv):
     scaled = eigv / np.linalg.norm(eigv)
-    lmb = (scaled.T @ S @ scaled) / (scaled.T @ scaled)
+    lmb = (eigv.T @ S @ eigv) / (eigv.T @ eigv)
     lmb = lmb[0]
 
     # get true eig_vecs using numpy.linalg.eig
@@ -81,7 +93,7 @@ def compare_eig(S, eigv):
     true_vec = true_vecs[:, idx].reshape(-1, 1)
     true_val = true_vals[idx]
 
-    val_rel_error = abs(lmb - true_val) / true_val
-    vec_rel_error = max(abs(scaled - true_vec) / true_vec)
+    val_rel_error = abs(lmb - true_val)
+    vec_rel_error = max(abs(scaled - true_vec))
 
     return {"evals_np": true_vals, "eval_np": true_val, "eval_NN": lmb[0], "val_err": val_rel_error[0], "evecs_np": true_vecs, "evec_np": true_vec, "evec_NN": scaled, "vec_err": vec_rel_error[0]}
