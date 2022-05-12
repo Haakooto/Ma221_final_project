@@ -9,8 +9,10 @@ from tqdm.notebook import tqdm
 
 amax = lambda x: np.max(np.abs(x))
 
-
 class EigenSolver(nn.Module):
+    """
+    Fully connected neural network.
+    """
     def __init__(self, n, hiddens, nonlin=nn.ReLU, use_bias=True, seed=None):
         super().__init__()
         if seed is not None:
@@ -23,7 +25,7 @@ class EigenSolver(nn.Module):
         for prev, next in zip(nodes[:-2], nodes[1:-1]):
             layers += [nn.Linear(prev, next, bias=use_bias,
                                  dtype=torch.float), self.activation()]
-
+        # string togheter linear layers with non-linearities inbetween
         self.layers = nn.Sequential(*layers,
                                     nn.Linear(
                                         nodes[-2], nodes[-1], bias=use_bias, dtype=torch.float),
@@ -33,36 +35,35 @@ class EigenSolver(nn.Module):
         # items to record
         self.losses = []
         self.vals = []
-        self.jacsum = []
         self.vecs = []
         self.residuals = []
-        self.maxdts = []
+        self.thing = []
 
         self.epochs = 0
 
-    def forward(self, x):
+    def forward(self, x):  # pass input through every layer
         return self.layers(x)
 
     def train(self, S_, t, epochs, lr=0.001):
         optimer = torch.optim.AdamW(self.parameters(), lr=lr)
 
+        # convert matrices to torch tensors
         t = torch.tensor([t]).t().to(torch.float)
         t.requires_grad = True
         S = torch.tensor(S_).to(torch.float)
-        S.requires_grad = True
-        change = 0
+        change = 0  # initialize
 
-        pbar = tqdm(range(epochs))
-        try:
+        pbar = tqdm(range(epochs))  # progress bar
+        try:  # catch keyboard interuptions
             for i in pbar:
                 optimer.zero_grad()
 
                 x = self(t)  # pass input through network
                 jac = torch.autograd.functional.jacobian(
-                    self, t, create_graph=True)
+                    self, t, create_graph=True)  # differentiate output w.r.t input
                 dt = einops.reduce(jac, "d n t s -> d n", reduction="sum").t()   # dx/dt
 
-                Ax = x @ S
+                Ax = x @ S  # the reverse order lets many time-points t to be passed through and calculate loss correctly
                 xxAx = (x * x).sum(1) * Ax.t()
                 xAxx = (x * Ax).sum(1) * x.t()
 
@@ -73,30 +74,27 @@ class EigenSolver(nn.Module):
 
                 # record several statistics
                 evec = x[-1].detach().numpy()  # vector resulting from highest time t
+                evec *= np.sign(evec[0])  # make the first element positive
                 normed_vec = evec / np.linalg.norm(evec)
                 eval = normed_vec.T @ S_ @ normed_vec
                 res = S_ @ normed_vec - eval * normed_vec
+                thing = np.std(S_ @ normed_vec - normed_vec)
 
                 self.residuals.append(amax(res))
                 self.vecs.append(normed_vec)
                 self.losses.append(loss.detach())
                 self.vals.append(eval)
-                self.jacsum.append(jac.detach().abs().sum())
-                self.maxdts.append(dt.detach().abs().max())
+                self.thing.append(thing)
 
-                if i > 5:
-                    change = np.max(np.abs((normed_vec - self.vecs[-2])))
+                if i > 10:
+                    change = np.abs(np.mean(self.vals[-10:-1]) - self.vals[-1])
                     if change < 1e-6:
-                        print("Vector stopped moving!")
+                        print("Network converged!")
                         break
-                if np.max(np.abs(res)) < 1e-6:
-                    print(f"Reached tolerance residual. Vector is {'NOT' if (normed_vec < 1e-6).all() else ''} the 0-vector!")
-                    break
 
                 pbar.set_description(f"eval: {eval:.5f},\
                                   log(loss): {torch.log10(loss.data):.5f},\
                                    log(res): {np.log10(amax(res)):.5f},\
-                                     change: {change:10f},\
                                        ")
 
         except KeyboardInterrupt:
@@ -108,36 +106,52 @@ class EigenSolver(nn.Module):
         self.evec = self.vecs[-1]
 
 
-def plot_history(model, evals, evecs):
-    fig, axs = plt.subplots(2, 1, figsize=(16, 12), gridspec_kw={'height_ratios': [4, 2]})
-    ax_val, ax_dt = axs
-    ax_loss = ax_dt.twinx()
-    ax_err = ax_val.twinx()
-
-    ax_val.plot(model.vals, "orange", lw=4)
-
-    ax_err.plot(np.log10([np.min(np.abs(model.vals[i] - evals)) for i in range(model.epochs)]), "k", label="absolute difference to nearest true eval")
-    ax_err.plot(np.log10(model.residuals), "b", label="residual")
-    ax_err.set_ylabel("log(error)")
-    ax_err.legend(loc=1)
-    ax_val.plot(einops.repeat(evals, "v -> r v", r=model.epochs), "r--", lw=2)
-    ax_val.legend(["eigenvalue during training", "true eigenvalues"], loc=9)
-    ax_val.set_ylabel("value of eigenvalue")
-    ax_val.set_xlabel("epochs")
-
-    ax_dt.plot(np.log10(np.asarray(model.maxdts) + 1e-16), "b", label="max(dt)")
-    ax_dt.set_ylabel("log10(dt)")
-    ax_loss.plot(np.log10(model.losses), "k", label="log10(loss)")
-    ax_loss.set_ylabel("log10(loss)")
-    ax_dt.legend()
-
-    ax_val.set_title(f"value at end: {model.vals[-1]:.5f}, log of abs error from closes true val: {np.log10(np.min(np.abs(evals - model.vals[-1]))):.5f}")
-    ax_dt.set_title("max(dt) during training")
-
-
 def eigsort(A):
+    """
+    Useful function for sorting eigenvalues and vectors
+    from np.linalg.eig by the magnitude of eigenvalue
+    Also ensures that the first element in the eigenvectors is positive
+    """
     vals, vecs = np.linalg.eig(A)
     idxs = np.argsort(vals)
     vals = vals[idxs]
     vecs = vecs[:, idxs]
+    vecs *= np.sign(vecs[0, :])
     return vals, vecs
+
+
+def plot_history(model, evals, evecs, name):
+
+    fig, axs = plt.subplots(2, 1, figsize=(12, 12), gridspec_kw={'height_ratios': [4, 2]})
+    ax_val, ax_err = axs
+
+    ax_val.plot(model.vals, "orange", lw=4)
+    ax_val.plot(einops.repeat(evals, "v -> r v", r=model.epochs), "r--", lw=2)
+    ax_val.set_title(f"Calculated eigenvalue. Final value: {model.vals[-1]:.10f}")
+    ax_val.legend(["Potential eigenvalue", "true eigenvalues"])
+    ax_val.set_ylabel("value of eigenvalue")
+
+    ax_err.plot(np.log10([np.min(np.abs(model.vals[i] - evals)) for i in range(model.epochs)]), "k", label="distance to nearest eigenvalue")
+    ax_err.plot(np.log10(model.residuals), "b", label=r"residual, Ax'-$\lambda$'x'")
+    ax_err.set_title(f"Number of accurate decimals: {-np.log10(np.min(np.abs(evals - model.vals[-1]))):.0f}")
+    ax_err.set_ylabel("log10(y)")
+    ax_err.set_xlabel("epochs")
+    ax_err.legend()
+
+    plt.savefig(f"figs/{name}.pdf")
+    plt.clf()
+
+
+def plot_vecs(model, name):
+    n = model.vecs[0].shape[0]
+    fig, axs = plt.subplots(figsize=(12, 8))
+    cols = mpl.cm.brg(np.linspace(0, 1, n))
+    mvecs = np.column_stack(model.vecs)
+    for c in range(n):
+        axs.plot(mvecs[c, :], color=cols[c])
+        axs.legend([f"v{i}" for i in range(n)])
+        axs.set_xlabel("epochs")
+        axs.set_ylabel("value")
+        axs.set_title(f"Output of network during training")
+    plt.savefig(f"figs/{name}.pdf")
+    plt.clf()
