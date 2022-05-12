@@ -37,7 +37,6 @@ class EigenSolver(nn.Module):
         self.vals = []
         self.vecs = []
         self.residuals = []
-        self.thing = []
 
         self.epochs = 0
 
@@ -78,13 +77,11 @@ class EigenSolver(nn.Module):
                 normed_vec = evec / np.linalg.norm(evec)
                 eval = normed_vec.T @ S_ @ normed_vec
                 res = S_ @ normed_vec - eval * normed_vec
-                thing = np.std(S_ @ normed_vec - normed_vec)
 
                 self.residuals.append(amax(res))
                 self.vecs.append(normed_vec)
                 self.losses.append(loss.detach())
                 self.vals.append(eval)
-                self.thing.append(thing)
 
                 if i > 10:
                     change = np.abs(np.mean(self.vals[-10:-1]) - self.vals[-1])
